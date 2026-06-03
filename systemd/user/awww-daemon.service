@@ -1,0 +1,13 @@
+[Unit]
+Description=awww wallpaper daemon
+
+[Service]
+Type=simple
+ExecStartPre=-/bin/sh -c 'pkill -x awww-daemon 2>/dev/null; sleep 0.3; rm -f /run/user/$(id -u)/*-awww-daemon.sock'
+ExecStart=/usr/bin/awww-daemon
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

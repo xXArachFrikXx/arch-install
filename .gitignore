@@ -1,0 +1,11 @@
+# OAuth tokens — never commit these
+dotfiles/config/gh/hosts.yml
+
+# Large binaries — backed up via backup.sh instead
+*.AppImage
+clip-thumbnailer
+
+# Backup artifacts
+*.bak
+*.bak.*
+manifest.txt

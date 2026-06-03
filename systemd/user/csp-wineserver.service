@@ -1,0 +1,16 @@
+[Unit]
+Description=Wine server pre-warm for CSP
+After=default.target
+
+[Service]
+Type=simple
+Environment=WINEPREFIX=/home/Frik/.wine-csp
+Environment=WINESERVER=/home/Frik/.local/share/cspenguin/wine-11.4/bin/wineserver
+Environment=WINEDEBUG=-all
+ExecStartPre=-/home/Frik/.local/share/cspenguin/wine-11.4/bin/wineserver -k
+ExecStart=/home/Frik/.local/share/cspenguin/wine-11.4/bin/wineserver -f
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

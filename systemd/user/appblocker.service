@@ -1,0 +1,13 @@
+[Unit]
+Description=App Blocker Daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/Frik/.local/bin/appblocker daemon
+Restart=always
+RestartSec=1
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

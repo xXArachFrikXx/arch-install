@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+appblocker — daily playtime quota enforcer.
+
+Commands:
+  appblocker install                            Install & enable the daemon
+  appblocker quota set -a <apps> --hours <n>   Set daily quota (passphrase shown once)
+  appblocker quota show                         Show today's usage
+  appblocker quota remove --passphrase <p>      Remove quota (requires passphrase)
+  appblocker status                             Show remaining time today
+  appblocker block -a <apps> -d <duration>      Manual timed block
+  appblocker stop <session-key>                 Stop a manual block early
+"""
+
+import argparse
+import hashlib
+import json
+import re
+import secrets
+import subprocess
+import sys
+import time
+from datetime import date, datetime
+from pathlib import Path
+
+QUOTA_FILE   = Path.home() / ".config" / "appblocker" / "quota.json"
+USAGE_FILE   = Path.home() / ".config" / "appblocker" / "usage.json"
+STATE_FILE   = Path.home() / ".config" / "appblocker" / "session.json"
+SERVICE      = "appblocker"
+SCRIPT_PATH  = Path(__file__).resolve()
+
+WARN_AT_SECS = 15 * 60   # notify when 15 minutes remain
+
+
+# ── persistence ───────────────────────────────────────────────────────────────
+
+def load_json(path):
+    if not path.exists():
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def load_quota():   return load_json(QUOTA_FILE)
+def load_state():   return load_json(STATE_FILE)
+def save_quota(d):  save_json(QUOTA_FILE, d)
+def save_state(d):  save_json(STATE_FILE, d)
+
+def clear_state():
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+
+
+# ── usage tracking ────────────────────────────────────────────────────────────
+
+def today_str() -> str:
+    return date.today().isoformat()
+
+def load_usage() -> dict:
+    data = load_json(USAGE_FILE)
+    if not data or data.get("date") != today_str():
+        return {"date": today_str(), "seconds_used": 0, "warned": False}
+    return data
+
+def save_usage(data: dict):
+    save_json(USAGE_FILE, data)
+
+def any_app_running(apps: list[str]) -> bool:
+    for app in apps:
+        r = subprocess.run(["pgrep", "-x", app], capture_output=True)
+        if r.returncode == 0:
+            return True
+        r = subprocess.run(["pgrep", "-f", app], capture_output=True)
+        if r.returncode == 0:
+            return True
+    return False
+
+def kill_apps(apps: list[str]):
+    for app in apps:
+        subprocess.run(["pkill", "-9", "-x", app], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", app], capture_output=True)
+        subprocess.run(
+            ["hyprctl", "dispatch", "closewindow", f"class:{app}"],
+            capture_output=True,
+        )
+
+def notify(title: str, body: str, urgency: str = "normal"):
+    subprocess.run(
+        ["notify-send", "-u", urgency, "-a", "appblocker", title, body],
+        capture_output=True,
+    )
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def parse_duration(s: str) -> int:
+    total = sum(
+        int(v) * {"h": 3600, "m": 60, "s": 1}[u]
+        for v, u in re.findall(r"(\d+)([hms])", s)
+    )
+    if total == 0:
+        raise ValueError(f"Invalid duration '{s}'")
+    return total
+
+def fmt_duration(secs: int) -> str:
+    secs = max(0, int(secs))
+    h, r = divmod(secs, 3600)
+    m, s = divmod(r, 60)
+    parts = []
+    if h: parts.append(f"{h}h")
+    if m: parts.append(f"{m}m")
+    if s or not parts: parts.append(f"{s}s")
+    return "".join(parts)
+
+def progress_bar(used: int, total: int, width: int = 38) -> str:
+    pct    = min(used / total, 1.0)
+    filled = int(width * pct)
+    return "█" * filled + "░" * (width - filled)
+
+def svc(*args):
+    subprocess.run(["systemctl", "--user", *args], capture_output=True)
+
+def sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+# ── daemon ────────────────────────────────────────────────────────────────────
+
+def run_daemon():
+    while True:
+        try:
+            quota = load_quota()
+            if quota:
+                usage   = load_usage()
+                used    = usage["seconds_used"]
+                total   = quota["daily_seconds"]
+                running = any_app_running(quota["apps"])
+
+                if running:
+                    if used >= total:
+                        kill_apps(quota["apps"])
+                        if not usage.get("cutoff_notified"):
+                            notify(
+                                "Time's up",
+                                f"Daily quota of {fmt_duration(total)} reached.",
+                                urgency="critical",
+                            )
+                            usage["cutoff_notified"] = True
+                            save_usage(usage)
+                    else:
+                        usage["seconds_used"] = used + 1
+                        remaining = total - usage["seconds_used"]
+
+                        # 15-minute warning
+                        if remaining <= WARN_AT_SECS and not usage.get("warned"):
+                            notify(
+                                "15 minutes left",
+                                f"Steam will close in {fmt_duration(remaining)}.",
+                                urgency="normal",
+                            )
+                            usage["warned"] = True
+
+                        save_usage(usage)
+
+            # Manual session
+            state = load_state()
+            if state:
+                if time.time() >= state["expires_at"]:
+                    clear_state()
+                else:
+                    kill_apps(state["apps"])
+
+        except Exception:
+            pass
+
+        time.sleep(1)
+
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+def cmd_quota_set(args):
+    if load_quota():
+        print("[!] A quota already exists. Remove it first:")
+        print("    appblocker quota remove --passphrase <passphrase>")
+        sys.exit(1)
+
+    try:
+        hours = float(args.hours)
+    except ValueError:
+        print("--hours must be a number, e.g. 2 or 1.5")
+        sys.exit(1)
+
+    apps    = [a.strip() for a in args.apps.split(",") if a.strip()]
+    total   = int(hours * 3600)
+    phrase  = secrets.token_urlsafe(32)
+
+    save_quota({
+        "apps":           apps,
+        "daily_seconds":  total,
+        "phrase_hash":    sha(phrase),
+    })
+
+    svc("start", SERVICE)
+
+    bar = "─" * 56
+    print(f"┌{bar}┐")
+    print(f"│  QUOTA SET — IRREVERSIBLE WITHOUT PASSPHRASE          │")
+    print(f"├{bar}┤")
+    print(f"│  Apps  : {', '.join(apps):<46} │")
+    print(f"│  Quota : {fmt_duration(total)} per day{'':<42}│")
+    print(f"├{bar}┤")
+    print(f"│  PASSPHRASE (shown once — write it down):             │")
+    print(f"│                                                        │")
+    print(f"│  {phrase:<54} │")
+    print(f"│                                                        │")
+    print(f"│  appblocker quota remove --passphrase …               │")
+    print(f"└{bar}┘")
+
+
+def cmd_quota_show(_args):
+    quota = load_quota()
+    if not quota:
+        print("No quota set.")
+        return
+    usage     = load_usage()
+    used      = usage["seconds_used"]
+    total     = quota["daily_seconds"]
+    remaining = max(0, total - used)
+    bar       = progress_bar(used, total)
+    print(f"Apps    : {', '.join(quota['apps'])}")
+    print(f"Quota   : {fmt_duration(total)} / day")
+    print(f"Used    : {fmt_duration(used)}  [{bar}]  {fmt_duration(remaining)} left")
+
+
+def cmd_quota_remove(args):
+    quota = load_quota()
+    if not quota:
+        print("No quota to remove.")
+        return
+    if sha(args.passphrase) != quota["phrase_hash"]:
+        print("[✗] Wrong passphrase.")
+        sys.exit(1)
+    QUOTA_FILE.unlink()
+    if USAGE_FILE.exists():
+        USAGE_FILE.unlink()
+    if not load_state():
+        svc("stop", SERVICE)
+    print("[✓] Quota removed.")
+
+
+def cmd_block(args):
+    state = load_state()
+    if state and time.time() < state["expires_at"]:
+        rem = int(state["expires_at"] - time.time())
+        print(f"[!] Manual session already active — {fmt_duration(rem)} remaining.")
+        sys.exit(1)
+
+    duration = parse_duration(args.duration)
+    apps     = [a.strip() for a in args.apps.split(",") if a.strip()]
+    key      = secrets.token_urlsafe(32)
+    expires  = time.time() + duration
+
+    save_state({
+        "apps":       apps,
+        "expires_at": expires,
+        "started_at": time.time(),
+        "duration":   duration,
+        "key_hash":   sha(key),
+    })
+
+    svc("start", SERVICE)
+
+    exp = datetime.fromtimestamp(expires).strftime("%H:%M:%S")
+    bar = "─" * 56
+    print(f"┌{bar}┐")
+    print(f"│  MANUAL BLOCK ACTIVE                                   │")
+    print(f"├{bar}┤")
+    print(f"│  Apps    : {', '.join(apps):<42} │")
+    print(f"│  Expires : {exp:<42} │")
+    print(f"├{bar}┤")
+    print(f"│  SESSION KEY (shown once):                             │")
+    print(f"│  {key:<54} │")
+    print(f"│  appblocker stop <key>                                 │")
+    print(f"└{bar}┘")
+
+
+def cmd_stop(args):
+    state = load_state()
+    if not state:
+        print("No active manual session.")
+        return
+    if time.time() >= state["expires_at"]:
+        clear_state()
+        print("Session already expired.")
+        return
+    if sha(args.key) != state["key_hash"]:
+        print(f"[✗] Wrong key.")
+        sys.exit(1)
+    clear_state()
+    if not load_quota():
+        svc("stop", SERVICE)
+    print("[✓] Manual session stopped.")
+
+
+def cmd_status(_args):
+    quota = load_quota()
+    state = load_state()
+    now   = time.time()
+
+    if not quota and not state:
+        print("No active blocks.")
+        return
+
+    if quota:
+        usage     = load_usage()
+        used      = usage["seconds_used"]
+        total     = quota["daily_seconds"]
+        remaining = max(0, total - used)
+        bar       = progress_bar(used, total)
+        running   = any_app_running(quota["apps"])
+        status    = "running" if running else "idle"
+        print(f"Quota   : {fmt_duration(remaining)} remaining today  [{bar}]  [{status}]")
+        print(f"  Apps  : {', '.join(quota['apps'])}")
+        print(f"  Resets: midnight")
+
+    if state and now < state["expires_at"]:
+        rem = int(state["expires_at"] - now)
+        exp = datetime.fromtimestamp(state["expires_at"]).strftime("%H:%M:%S")
+        print(f"Manual  : {', '.join(state['apps'])} blocked until {exp} ({fmt_duration(rem)} left)")
+
+
+def cmd_install(_args):
+    svc_dir  = Path.home() / ".config" / "systemd" / "user"
+    svc_dir.mkdir(parents=True, exist_ok=True)
+    svc_file = svc_dir / f"{SERVICE}.service"
+
+    svc_file.write_text(f"""\
+[Unit]
+Description=App Blocker Daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {SCRIPT_PATH} daemon
+Restart=always
+RestartSec=1
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target
+""")
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"])
+    subprocess.run(["systemctl", "--user", "enable", SERVICE])
+    subprocess.run(["systemctl", "--user", "start",  SERVICE])
+
+    print(f"[✓] Service installed and started.")
+    print()
+    print("Set a daily quota:")
+    print("  appblocker quota set -a steam --hours 2")
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(description="Daily playtime quota enforcer")
+    sub = p.add_subparsers(dest="cmd", metavar="command")
+
+    pq = sub.add_parser("quota", help="Manage daily playtime quota")
+    sq = pq.add_subparsers(dest="subcmd", metavar="subcommand")
+
+    pqs = sq.add_parser("set", help="Set daily quota")
+    pqs.add_argument("-a", "--apps",  required=True, help="Comma-separated process names")
+    pqs.add_argument("--hours",       required=True, help="Hours allowed per day (e.g. 2 or 1.5)")
+
+    sq.add_parser("show", help="Show today's usage")
+
+    pqr = sq.add_parser("remove", help="Remove quota (requires passphrase)")
+    pqr.add_argument("--passphrase", required=True)
+
+    pb = sub.add_parser("block", help="Manual timed block")
+    pb.add_argument("-a", "--apps",     required=True)
+    pb.add_argument("-d", "--duration", required=True)
+
+    pst = sub.add_parser("stop", help="Stop manual block (requires key)")
+    pst.add_argument("key")
+
+    sub.add_parser("status",  help="Show current state")
+    sub.add_parser("install", help="Install systemd service")
+    sub.add_parser("daemon",  help=argparse.SUPPRESS)
+
+    args = p.parse_args()
+
+    if args.cmd == "quota":
+        if not args.subcmd:
+            pq.print_help()
+        elif args.subcmd == "set":    cmd_quota_set(args)
+        elif args.subcmd == "show":   cmd_quota_show(args)
+        elif args.subcmd == "remove": cmd_quota_remove(args)
+    elif args.cmd == "block":   cmd_block(args)
+    elif args.cmd == "stop":    cmd_stop(args)
+    elif args.cmd == "status":  cmd_status(args)
+    elif args.cmd == "install": cmd_install(args)
+    elif args.cmd == "daemon":  run_daemon()
+    else:
+        p.print_help()
+
+
+if __name__ == "__main__":
+    main()
