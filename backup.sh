@@ -130,6 +130,18 @@ fi
 section "Music library"
 backup_path "$HOME/Music"                      "Music"
 
+section "Extra wallpapers (~/wallpapers/)"
+backup_path "$HOME/wallpapers"                 "wallpapers"
+
+section "GPG keys"
+backup_path "$HOME/.gnupg"                     "gnupg"
+
+section "VSCodium extension data"
+backup_path "$HOME/.vscode-oss"                "vscode-oss" \
+    --exclude="Cache/" \
+    --exclude="GPUCache/" \
+    --exclude="Code Cache/"
+
 section "Wine prefix (Clip Studio Paint)"
 backup_path "$HOME/.wine-csp"                  "wine-csp"
 

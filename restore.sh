@@ -113,6 +113,16 @@ fi
 section "Music library (~7.9 GB)"
 restore_path "Music"                     "$HOME/Music"
 
+section "Extra wallpapers"
+restore_path "wallpapers"                "$HOME/wallpapers"
+
+section "GPG keys"
+restore_path "gnupg"                     "$HOME/.gnupg"
+[[ -d "$HOME/.gnupg" ]] && chmod 700 "$HOME/.gnupg"
+
+section "VSCodium extension data"
+restore_path "vscode-oss"                "$HOME/.vscode-oss"
+
 section "Wine prefix (Clip Studio Paint, ~4.9 GB)"
 restore_path "wine-csp"                  "$HOME/.wine-csp"
 
