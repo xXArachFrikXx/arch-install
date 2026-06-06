@@ -110,9 +110,6 @@ else
 fi
 
 # ── Restore paths ─────────────────────────────────────────────────────────────
-section "Music library (~7.9 GB)"
-restore_path "Music"                     "$HOME/Music"
-
 section "Extra wallpapers"
 restore_path "wallpapers"                "$HOME/wallpapers"
 
@@ -122,9 +119,6 @@ restore_path "gnupg"                     "$HOME/.gnupg"
 
 section "VSCodium extension data"
 restore_path "vscode-oss"                "$HOME/.vscode-oss"
-
-section "Wine prefix (Clip Studio Paint, ~4.9 GB)"
-restore_path "wine-csp"                  "$HOME/.wine-csp"
 
 section "~/.local/bin"
 restore_path "local-bin"                 "$HOME/.local/bin"

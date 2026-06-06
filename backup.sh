@@ -104,7 +104,7 @@ if ! $DRY_RUN; then
 
     # Check free space (rough estimate: 15 GB needed)
     AVAIL_KB="$(df -k "$DEST" | awk 'NR==2{print $4}')"
-    NEEDED_KB=$((15 * 1024 * 1024))  # 15 GB in KB
+    NEEDED_KB=$((6 * 1024 * 1024))  # 6 GB in KB
     if [[ "$AVAIL_KB" -lt "$NEEDED_KB" ]]; then
         warn "Destination may not have enough space."
         warn "Available: $(( AVAIL_KB / 1024 / 1024 )) GB — recommended: 15+ GB"
@@ -127,9 +127,6 @@ if ! $SKIP_DOWNLOADS && ! $DRY_RUN; then
 fi
 
 # ── Backup each path ──────────────────────────────────────────────────────────
-section "Music library"
-backup_path "$HOME/Music"                      "Music"
-
 section "Extra wallpapers (~/wallpapers/)"
 backup_path "$HOME/wallpapers"                 "wallpapers"
 
@@ -142,19 +139,8 @@ backup_path "$HOME/.vscode-oss"                "vscode-oss" \
     --exclude="GPUCache/" \
     --exclude="Code Cache/"
 
-section "Wine prefix (Clip Studio Paint)"
-backup_path "$HOME/.wine-csp"                  "wine-csp"
-
 section "~/.local/bin (clip-thumbnailer, DigitalZen.AppImage, etc.)"
 backup_path "$HOME/.local/bin"                 "local-bin"
-
-section "Vesktop (Discord/Vencord)"
-backup_path "$HOME/.config/vesktop"            "config/vesktop" \
-    --exclude="Cache/" \
-    --exclude="GPUCache/" \
-    --exclude="Code Cache/" \
-    --exclude="DawnGraphiteCache/" \
-    --exclude="DawnWebGPUCache/"
 
 section "Zen browser profile"
 backup_path "$HOME/.config/zen"                "config/zen" \
