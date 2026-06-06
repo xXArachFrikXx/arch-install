@@ -104,6 +104,22 @@ if $DO_PACKAGES; then
         fi
     fi
 
+    # ── Clean up orphaned dependencies ───────────────────────────────────────
+    ORPHANS=$(pacman -Qqdt 2>/dev/null || true)
+    if [[ -n "$ORPHANS" ]]; then
+        info "Removing orphaned dependencies..."
+        if ! $DRY_RUN; then
+            sudo pacman -Rns --noconfirm $ORPHANS 2>/dev/null && ok "Orphans removed" \
+                || warn "Some orphans could not be removed"
+        else
+            echo "$ORPHANS" | while read -r pkg; do
+                echo -e "  ${CYAN}[dry]${NC} would remove orphan: $pkg"
+            done
+        fi
+    else
+        ok "No orphaned dependencies"
+    fi
+
     # ── Install packages in source NOT on this machine ────────────────────────
     TO_INSTALL=$(comm -23 \
         <(echo "$SOURCE") \
